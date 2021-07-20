@@ -561,7 +561,8 @@ find_suitable_key(pgp_op_t            op,
                   pgp_key_t *         key,
                   pgp_key_provider_t *key_provider,
                   uint8_t             desired_usage,
-                  bool                no_primary)
+                  bool                no_primary,
+                  bool                secret_only)
 {
     assert(desired_usage);
     if (!key) {
@@ -570,7 +571,7 @@ find_suitable_key(pgp_op_t            op,
     if (!no_primary && key->valid() && (key->flags() & desired_usage)) {
         return key;
     }
-    pgp_key_request_ctx_t ctx{.op = op, .secret = key->is_secret()};
+    pgp_key_request_ctx_t ctx{.op = op, .secret = secret_only ? true : key->is_secret()};
     ctx.search.type = PGP_KEY_SEARCH_FINGERPRINT;
 
     pgp_key_t *subkey = NULL;
