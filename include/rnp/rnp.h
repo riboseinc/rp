@@ -1357,16 +1357,18 @@ RNP_API rnp_result_t rnp_key_get_subkey_at(rnp_key_handle_t  key,
  *  and returns one of its subkeys suitable for desired usage.
  *  May return the same primary key if it is suitable for requested
  *  usage and flag RNP_KEY_SUBKEYS_ONLY is not set.
- *  available.
  *
  *  @param primary_key handle of the primary key.
- *  @param usage see rnp_op_generate_add_usage() function description.
+ *  @param usage desired key usage i.e. "sign", "certify", etc,
+ *         see rnp_op_generate_add_usage() function description for all possible values.
  *  @param flags possible values:  RNP_KEY_SUBKEYS_ONLY - select only subkeys,
  *               otherwise if flags is 0, primary key can be returned if
- *               it is suitabled for specified usage.
+ *               it is suitable for specified usage.
  *  @param default_key on success resulting key handle will be stored here, otherwise it
  *         will contain NULL value. You must free this handle after use with
  *         rnp_key_handle_destroy().
+ *  @return RNP_SUCCESS on success, RNP_ERROR_KEY_NOT_FOUND if no key with desired usage
+ *          was found or any other error code.
  */
 RNP_API rnp_result_t rnp_key_get_default_key(rnp_key_handle_t  primary_key,
                                              const char *      usage,
