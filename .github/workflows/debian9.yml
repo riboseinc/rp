@@ -1,11 +1,19 @@
 name: debian9
 
 on:
-  pull_request:
   push:
     branches:
       - master
       - 'release/**'
+    paths-ignore:
+      - 'docs/**'
+      - '**.adoc'
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.adoc'
+      - '**.md'
 
 env:
   CORES: 2
@@ -17,6 +25,7 @@ env:
   GPG_VERSION: stable
   SUDO: ""
   USE_STATIC_DEPENDENCIES: yes
+  RNP_LOG_CONSOLE: 1
 
 jobs:
   tests:
@@ -77,3 +86,8 @@ jobs:
           chown -R rnpuser:rnpuser $PWD
           exec su rnpuser -c ci/run.sh
         shell: bash
+      - name: Package
+        run: |
+          set -x
+          cd ${LOCAL_BUILDS}/rnp-build
+          cpack -G DEB -D CPACK_DEBIAN_PACKAGE_SHLIBDEPS_PRIVATE_DIRS="${BOTAN_INSTALL}/lib;${JSONC_INSTALL}/lib;${GPG_INSTALL}/lib"

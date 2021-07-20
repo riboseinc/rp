@@ -1081,6 +1081,14 @@ cli_rnp_generate_key(cli_rnp_t *rnp, const char *username)
         ERR_MSG("Failed to set key curve.");
         goto done;
     }
+    if (cfg.has(CFG_KG_PRIMARY_EXPIRATION)) {
+        uint32_t expiration = 0;
+        if (get_expiration(cfg.get_cstr(CFG_KG_PRIMARY_EXPIRATION), &expiration) ||
+            rnp_op_generate_set_expiration(genkey, expiration)) {
+            ERR_MSG("Failed to set primary key expiration.");
+            goto done;
+        }
+    }
     // TODO : set DSA qbits
     if (rnp_op_generate_set_hash(genkey, cfg.get_cstr(CFG_KG_HASH))) {
         ERR_MSG("Failed to set hash algorithm.");
@@ -1114,6 +1122,14 @@ cli_rnp_generate_key(cli_rnp_t *rnp, const char *username)
         rnp_op_generate_set_curve(genkey, cfg.get_cstr(CFG_KG_SUBKEY_CURVE))) {
         ERR_MSG("Failed to set subkey curve.");
         goto done;
+    }
+    if (cfg.has(CFG_KG_SUBKEY_EXPIRATION)) {
+        uint32_t expiration = 0;
+        if (get_expiration(cfg.get_cstr(CFG_KG_SUBKEY_EXPIRATION), &expiration) ||
+            rnp_op_generate_set_expiration(genkey, expiration)) {
+            ERR_MSG("Failed to set subkey expiration.");
+            goto done;
+        }
     }
     // TODO : set DSA qbits
     if (rnp_op_generate_set_hash(genkey, cfg.get_cstr(CFG_KG_HASH))) {
@@ -1552,6 +1568,13 @@ rnp_cfg_set_ks_info(rnp_cfg &cfg)
         defhomedir = true;
     }
 
+    struct stat st;
+
+    if (rnp_stat(homedir.c_str(), &st) || rnp_access(homedir.c_str(), R_OK | W_OK)) {
+        ERR_MSG("Home directory '%s' does not exist or is not writable!", homedir.c_str());
+        return false;
+    }
+
     /* detecting key storage format */
     std::string subdir = defhomedir ? SUBDIRECTORY_RNP : "";
     std::string pubpath;
@@ -1562,9 +1585,8 @@ rnp_cfg_set_ks_info(rnp_cfg &cfg)
         pubpath = rnp_path_compose(homedir, subdir, PUBRING_KBX);
         secpath = rnp_path_compose(homedir, subdir, SECRING_G10);
 
-        struct stat st;
-        bool        pubpath_exists = !rnp_stat(pubpath.c_str(), &st);
-        bool        secpath_exists = !rnp_stat(secpath.c_str(), &st);
+        bool pubpath_exists = !rnp_stat(pubpath.c_str(), &st);
+        bool secpath_exists = !rnp_stat(secpath.c_str(), &st);
 
         if (pubpath_exists && secpath_exists) {
             ks_format = RNP_KEYSTORE_GPG21;
@@ -2236,7 +2258,12 @@ cli_rnp_sign(const rnp_cfg &cfg, cli_rnp_t *rnp, rnp_input_t input, rnp_output_t
         goto done;
     }
     rnp_op_sign_set_creation_time(op, get_creation(cfg.get_cstr(CFG_CREATION)));
-    rnp_op_sign_set_expiration_time(op, get_expiration(cfg.get_cstr(CFG_EXPIRATION)));
+    {
+        uint32_t expiration = 0;
+        if (!get_expiration(cfg.get_cstr(CFG_EXPIRATION), &expiration)) {
+            rnp_op_sign_set_expiration_time(op, expiration);
+        }
+    }
 
     /* signing keys */
     signers = cfg.get_list(CFG_SIGNERS);
@@ -2281,6 +2308,7 @@ cli_rnp_encrypt_and_sign(const rnp_cfg &cfg,
     std::vector<rnp_key_handle_t> enckeys;
     std::vector<rnp_key_handle_t> signkeys;
     bool                          res = false;
+    rnp_result_t                  ret;
 
     rnp_op_encrypt_set_armor(op, cfg.get_bool(CFG_ARMOR));
 
@@ -2344,7 +2372,10 @@ cli_rnp_encrypt_and_sign(const rnp_cfg &cfg,
     /* adding signatures if encrypt-and-sign is used */
     if (cfg.get_bool(CFG_SIGN_NEEDED)) {
         rnp_op_encrypt_set_creation_time(op, get_creation(cfg.get_cstr(CFG_CREATION)));
-        rnp_op_encrypt_set_expiration_time(op, get_expiration(cfg.get_cstr(CFG_EXPIRATION)));
+        uint32_t expiration;
+        if (!get_expiration(cfg.get_cstr(CFG_EXPIRATION), &expiration)) {
+            rnp_op_encrypt_set_expiration_time(op, expiration);
+        }
 
         /* signing keys */
         std::vector<std::string> keynames = cfg.get_list(CFG_SIGNERS);
@@ -2365,7 +2396,11 @@ cli_rnp_encrypt_and_sign(const rnp_cfg &cfg,
     }
 
     /* execute encrypt or encrypt-and-sign operation */
-    res = !rnp_op_encrypt_execute(op);
+    ret = rnp_op_encrypt_execute(op);
+    res = (ret == RNP_SUCCESS);
+    if (ret != RNP_SUCCESS) {
+        ERR_MSG("Operation failed: %s", rnp_result_to_string(ret));
+    }
 done:
     clear_key_handles(signkeys);
     clear_key_handles(enckeys);

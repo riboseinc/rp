@@ -11,8 +11,8 @@
 : "${DIST_VERSION_ID:=}"
 : "${MINIMUM_RUBY_VERSION:=2.5.0}"
 : "${RECOMMENDED_RUBY_VERSION:=2.5.8}"
-: "${MINIMUM_CMAKE_VERSION:=3.14.0}"
-: "${RECOMMENDED_CMAKE_VERSION:=3.14.5}"
+: "${MINIMUM_CMAKE_VERSION:=3.20.0}"
+: "${RECOMMENDED_CMAKE_VERSION:=3.20.5}"
 : "${RECOMMENDED_PYTHON_VERSION:=3.9.2}"
 : "${RECOMMENDED_JSONC_VERSION:=0.12.1}"
 
@@ -215,7 +215,7 @@ linux_install_centos7() {
 linux_install_centos8() {
   yum_prepare_repos epel-release
   yum_install_build_dependencies \
-    cmake3
+    cmake
 
   yum_install_dynamic_build_dependencies_if_needed
 

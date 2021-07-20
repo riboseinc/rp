@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
+#include <limits.h>
 #ifdef HAVE_SYS_PARAM_H
 #include <sys/param.h>
 #else
@@ -41,6 +42,7 @@
 #include "rnpcfg.h"
 #include "defaults.h"
 #include "logging.h"
+#include "time-utils.h"
 #include <rnp/rnp.h>
 
 // must be placed after include "utils.h"
@@ -355,6 +357,39 @@ rnp_cfg::~rnp_cfg()
 }
 
 /**
+ * @brief Get number of days in month.
+ *
+ * @param year number of year, i.e. 2021
+ * @param month number of month, 1..12
+ * @return number of days (28..31) or 0 if month is wrong.
+ */
+static int
+days_in_month(int year, int month)
+{
+    switch (month) {
+    case 1:
+    case 3:
+    case 5:
+    case 7:
+    case 8:
+    case 10:
+    case 12:
+        return 31;
+    case 4:
+    case 6:
+    case 9:
+    case 11:
+        return 30;
+    case 2: {
+        bool leap_year = !(year % 400) || (!(year % 4) && (year % 100));
+        return leap_year ? 29 : 28;
+    }
+    default:
+        return 0;
+    }
+}
+
+/**
  * @brief Grabs date from the string in %Y-%m-%d format
  *
  * @param s [in] NULL-terminated string with the date
@@ -362,92 +397,171 @@ rnp_cfg::~rnp_cfg()
  * @return true on success or false otherwise
  */
 
-static bool
-grabdate(const char *s, int64_t *t)
+/** @brief
+ *
+ *  @param s [in] NULL-terminated string with the date
+ *  @param t [out] UNIX timestamp of
+ * successfully parsed date
+ *  @return 0 when parsed successfully
+ *          1 when s doesn't match the regex
+ * -1 when
+ * s matches the regex but the date is not acceptable
+ *          -2 failure
+ */
+static int
+grabdate(const char *s, uint64_t *t)
 {
+    /* fill time zone information */
+    const time_t now = time(NULL);
+    struct tm    tm = *localtime(&now);
+    tm.tm_hour = 0;
+    tm.tm_min = 0;
+    tm.tm_sec = 0;
 #ifndef RNP_USE_STD_REGEX
     static regex_t r;
     static int     compiled;
     regmatch_t     matches[10];
-    struct tm      tm;
 
     if (!compiled) {
         compiled = 1;
         if (regcomp(&r,
-                    "([0-9][0-9][0-9][0-9])[-/]([0-9][0-9])[-/]([0-9][0-9])",
+                    "^([0-9][0-9][0-9][0-9])[-/]([0-9][0-9])[-/]([0-9][0-9])$",
                     REG_EXTENDED) != 0) {
             RNP_LOG("failed to compile regexp");
-            return false;
+            return -2;
         }
     }
-    if (regexec(&r, s, 10, matches, 0) == 0) {
-        (void) memset(&tm, 0x0, sizeof(tm));
-        tm.tm_year = (int) strtol(&s[(int) matches[1].rm_so], NULL, 10);
-        tm.tm_mon = (int) strtol(&s[(int) matches[2].rm_so], NULL, 10) - 1;
-        tm.tm_mday = (int) strtol(&s[(int) matches[3].rm_so], NULL, 10);
-        *t = mktime(&tm);
-        return true;
+    if (regexec(&r, s, 10, matches, 0) != 0) {
+        return 1;
     }
+    int year = (int) strtol(&s[(int) matches[1].rm_so], NULL, 10);
+    int mon = (int) strtol(&s[(int) matches[2].rm_so], NULL, 10);
+    int mday = (int) strtol(&s[(int) matches[3].rm_so], NULL, 10);
 #else
-    struct tm tm;
-
-    static std::regex re("([0-9][0-9][0-9][0-9])[-/]([0-9][0-9])[-/]([0-9][0-9])",
-                         std::regex_constants::extended);
+    static std::regex re("^([0-9][0-9][0-9][0-9])[-/]([0-9][0-9])[-/]([0-9][0-9])$",
+                         std::regex_constants::ECMAScript);
     std::smatch       result;
     std::string       input = s;
 
-    if (std::regex_search(input, result, re)) {
-        (void) memset(&tm, 0x0, sizeof(tm));
-        tm.tm_year = (int) strtol(result[1].str().c_str(), NULL, 10);
-        tm.tm_mon = (int) strtol(result[2].str().c_str(), NULL, 10) - 1;
-        tm.tm_mday = (int) strtol(result[3].str().c_str(), NULL, 10);
-        *t = mktime(&tm);
-        return true;
+    if (!std::regex_search(input, result, re)) {
+        return 1;
     }
+    int year = (int) strtol(result[1].str().c_str(), NULL, 10);
+    int mon = (int) strtol(result[2].str().c_str(), NULL, 10);
+    int mday = (int) strtol(result[3].str().c_str(), NULL, 10);
 #endif
-    return false;
+    if (year < 1970 || mon < 1 || mon > 12 || !mday || (mday > days_in_month(year, mon))) {
+        return -1;
+    }
+    tm.tm_year = year - 1900;
+    tm.tm_mon = mon - 1;
+    tm.tm_mday = mday;
+
+    struct tm check_tm = tm;
+    time_t    built_time = rnp_mktime(&tm);
+    time_t    check_time = mktime(&check_tm);
+    if (built_time != check_time) {
+        /* If date is beyond of yk2038 and we have 32-bit signed time_t, we need to reduce
+         * timestamp */
+        RNP_LOG("Warning: date %s is beyond of 32-bit time_t, so timestamp was reduced to "
+                "maximum supported value.",
+                s);
+    }
+    *t = built_time;
+    return 0;
 }
 
-uint64_t
-get_expiration(const char *s)
+int
+get_expiration(const char *s, uint32_t *res)
 {
-    uint64_t    now;
-    int64_t     t;
-    const char *mult;
-
     if (!s || !strlen(s)) {
-        return 0;
+        return -1;
     }
-    now = (uint64_t) strtoull(s, NULL, 10);
-    if ((mult = strchr("hdwmy", s[strlen(s) - 1])) != NULL) {
-        switch (*mult) {
-        case 'h':
-            return now * 60 * 60;
-        case 'd':
-            return now * 60 * 60 * 24;
-        case 'w':
-            return now * 60 * 60 * 24 * 7;
-        case 'm':
-            return now * 60 * 60 * 24 * 31;
-        case 'y':
-            return now * 60 * 60 * 24 * 365;
+    uint64_t delta;
+    uint64_t t;
+    int      grabdate_result = grabdate(s, &t);
+    if (!grabdate_result) {
+        uint64_t now = time(NULL);
+        if (t > now) {
+            delta = t - now;
+            if (delta > UINT32_MAX) {
+                return -3;
+            }
+            *res = delta;
+            return 0;
+        }
+        return -2;
+    } else if (grabdate_result < 0) {
+        return -2;
+    }
+#ifndef RNP_USE_STD_REGEX
+    static regex_t r;
+    static int     compiled;
+    regmatch_t     matches[10];
+
+    if (!compiled) {
+        compiled = 1;
+        if (regcomp(&r, "^([0-9]+)([hdwmy]?)$", REG_EXTENDED | REG_ICASE) != 0) {
+            RNP_LOG("failed to compile regexp");
+            return -2;
         }
     }
-    if (grabdate(s, &t)) {
-        return t;
+    if (regexec(&r, s, 10, matches, 0) != 0) {
+        return -2;
     }
-    return (uint64_t) strtoll(s, NULL, 10);
+    auto delta_str = &s[(int) matches[1].rm_so];
+    char mult = s[(int) matches[2].rm_so];
+#else
+    static std::regex re("^([0-9]+)([hdwmy]?)$",
+                         std::regex_constants::ECMAScript | std::regex_constants::icase);
+    std::smatch       result;
+    std::string       input = s;
+
+    if (!std::regex_search(input, result, re)) {
+        return -2;
+    }
+    std::string delta_stdstr = result[1].str();
+    const char *delta_str = delta_stdstr.c_str();
+    char        mult = result[2].str()[0];
+#endif
+    errno = 0;
+    delta = (uint64_t) strtoul(delta_str, NULL, 10);
+    if (errno || delta > UINT_MAX) {
+        return -3;
+    }
+    switch (std::tolower(mult)) {
+    case 'h':
+        delta *= 60 * 60;
+        break;
+    case 'd':
+        delta *= 60 * 60 * 24;
+        break;
+    case 'w':
+        delta *= 60 * 60 * 24 * 7;
+        break;
+    case 'm':
+        delta *= 60 * 60 * 24 * 31;
+        break;
+    case 'y':
+        delta *= 60 * 60 * 24 * 365;
+        break;
+    }
+    if (delta > UINT32_MAX) {
+        return -4;
+    }
+    *res = delta;
+    return 0;
 }
 
 int64_t
 get_creation(const char *s)
 {
-    int64_t t;
+    uint64_t t;
 
     if (!s || !strlen(s)) {
         return time(NULL);
     }
-    if (grabdate(s, &t)) {
+    if (!grabdate(s, &t)) {
         return t;
     }
     return (uint64_t) strtoll(s, NULL, 10);

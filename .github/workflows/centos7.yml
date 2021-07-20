@@ -1,11 +1,19 @@
 name: centos7
 
 on:
-  pull_request:
   push:
     branches:
       - master
       - 'release/**'
+    paths-ignore:
+      - 'docs/**'
+      - '**.adoc'
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.adoc'
+      - '**.md'
 
 env:
   CORES: 2
@@ -116,3 +124,8 @@ jobs:
           # check for install issues
           check_build
           build_example_pkgconfig
+      - name: Package
+        run: |
+          set -euxo pipefail
+          yum install -y rpm-build
+          cpack -G RPM

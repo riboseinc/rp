@@ -2317,6 +2317,9 @@ try {
                                        get_key_prefer_public(handle),
                                        &handle->ffi->key_provider,
                                        PGP_KF_ENCRYPT);
+    if (!key) {
+        key = get_key_prefer_public(handle);
+    }
     op->rnpctx.recipients.push_back(key);
     return RNP_SUCCESS;
 }
@@ -3542,24 +3545,9 @@ locator_to_str(const pgp_key_search_t *locator,
     return true;
 }
 
-rnp_result_t
-rnp_locate_key(rnp_ffi_t         ffi,
-               const char *      identifier_type,
-               const char *      identifier,
-               rnp_key_handle_t *handle)
-try {
-    // checks
-    if (!ffi || !identifier_type || !identifier || !handle) {
-        return RNP_ERROR_NULL_POINTER;
-    }
-
-    // figure out the identifier type
-    pgp_key_search_t locator = {(pgp_key_search_type_t) 0};
-    rnp_result_t     ret = str_to_locator(ffi, &locator, identifier_type, identifier);
-    if (ret) {
-        return ret;
-    }
-
+static rnp_result_t
+rnp_locate_key_int(rnp_ffi_t ffi, const pgp_key_search_t &locator, rnp_key_handle_t *handle)
+{
     // search pubring
     pgp_key_t *pub = rnp_key_store_search(ffi->pubring, &locator, NULL);
     // search secring
@@ -3578,6 +3566,27 @@ try {
         *handle = NULL;
     }
     return RNP_SUCCESS;
+}
+
+rnp_result_t
+rnp_locate_key(rnp_ffi_t         ffi,
+               const char *      identifier_type,
+               const char *      identifier,
+               rnp_key_handle_t *handle)
+try {
+    // checks
+    if (!ffi || !identifier_type || !identifier || !handle) {
+        return RNP_ERROR_NULL_POINTER;
+    }
+
+    // figure out the identifier type
+    pgp_key_search_t locator = {(pgp_key_search_type_t) 0};
+    rnp_result_t     ret = str_to_locator(ffi, &locator, identifier_type, identifier);
+    if (ret) {
+        return ret;
+    }
+
+    return rnp_locate_key_int(ffi, locator, handle);
 }
 FFI_GUARD
 
@@ -3681,25 +3690,6 @@ try {
 }
 FFI_GUARD
 
-static pgp_key_t *
-find_encrypting_subkey(rnp_ffi_t ffi, const pgp_key_t &primary)
-{
-    pgp_key_search_t search = {};
-    search.type = PGP_KEY_SEARCH_FINGERPRINT;
-
-    for (auto &fp : primary.subkey_fps()) {
-        search.by.fingerprint = fp;
-        pgp_key_t *subkey = find_key(ffi, &search, KEY_TYPE_PUBLIC, true);
-        if (!subkey) {
-            subkey = find_key(ffi, &search, KEY_TYPE_SECRET, true);
-        }
-        if (subkey && subkey->valid() && subkey->can_encrypt()) {
-            return subkey;
-        }
-    }
-    return NULL;
-}
-
 rnp_result_t
 rnp_key_export_autocrypt(rnp_key_handle_t key,
                          rnp_key_handle_t subkey,
@@ -3728,9 +3718,10 @@ try {
             return RNP_ERROR_BAD_PARAMETERS;
         }
     } else {
-        sub = find_encrypting_subkey(key->ffi, *primary);
+        sub = find_suitable_key(
+          PGP_OP_ENCRYPT, primary, &key->ffi->key_provider, PGP_KF_ENCRYPT, true);
     }
-    if (!sub) {
+    if (!sub || sub->is_primary()) {
         FFI_LOG(key->ffi, "No encrypting subkey");
         return RNP_ERROR_KEY_NOT_FOUND;
     }
@@ -5568,8 +5559,12 @@ try {
     pgp_key_pkt_t *         seckey = NULL;
     pgp_key_pkt_t *         decrypted_seckey = NULL;
 
-    if (!handle || !uid || !hash) {
+    if (!handle || !uid) {
         return RNP_ERROR_NULL_POINTER;
+    }
+
+    if (!hash) {
+        hash = DEFAULT_HASH_ALG;
     }
 
     if (!str_to_hash_alg(hash, &hash_alg)) {
@@ -5955,19 +5950,17 @@ FFI_GUARD
 rnp_result_t
 rnp_signature_get_signer(rnp_signature_handle_t sig, rnp_key_handle_t *key)
 try {
-    char *       keyid = NULL;
-    rnp_result_t ret = rnp_signature_get_keyid(sig, &keyid);
-    if (ret) {
-        return ret;
+    if (!sig || !sig->sig) {
+        return RNP_ERROR_BAD_PARAMETERS;
     }
-    if (!keyid) {
+    if (!sig->sig->sig.has_keyid()) {
         *key = NULL;
         return RNP_SUCCESS;
     }
-
-    ret = rnp_locate_key(sig->ffi, "keyid", keyid, key);
-    rnp_buffer_destroy(keyid);
-    return ret;
+    pgp_key_search_t locator = {};
+    locator.type = PGP_KEY_SEARCH_KEYID;
+    locator.by.keyid = sig->sig->sig.keyid();
+    return rnp_locate_key_int(sig->ffi, locator, key);
 }
 FFI_GUARD
 
@@ -6175,12 +6168,10 @@ try {
     if (idx >= key->subkey_count()) {
         return RNP_ERROR_BAD_PARAMETERS;
     }
-    const pgp_fingerprint_t &fp = key->get_subkey_fp(idx);
-    char                     fphex[PGP_FINGERPRINT_SIZE * 2 + 1] = {0};
-    if (!rnp::hex_encode(fp.fingerprint, fp.length, fphex, sizeof(fphex))) {
-        return RNP_ERROR_BAD_STATE;
-    }
-    return rnp_locate_key(handle->ffi, "fingerprint", fphex, subkey);
+    pgp_key_search_t locator = {};
+    locator.type = PGP_KEY_SEARCH_FINGERPRINT;
+    locator.by.fingerprint = key->get_subkey_fp(idx);
+    return rnp_locate_key_int(handle->ffi, locator, subkey);
 }
 FFI_GUARD
 
@@ -6468,7 +6459,7 @@ try {
         if (!primary->validated()) {
             return RNP_ERROR_VERIFICATION_FAILED;
         }
-        *result = key->valid_till(*primary);
+        *result = key->valid_till();
     } else {
         *result = key->valid_till();
     }
