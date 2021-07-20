@@ -6184,6 +6184,7 @@ try {
     }
     uint8_t keyflag = 0;
     bool    no_primary = false;
+    bool    secret_only = false;
     if (!str_to_key_flag(usage, &keyflag)) {
         return RNP_ERROR_BAD_PARAMETERS;
     }
@@ -6195,12 +6196,15 @@ try {
         FFI_LOG(primary_key->ffi, "Invalid flags: %" PRIu32, flags);
         return RNP_ERROR_BAD_PARAMETERS;
     }
+    if (keyflag != PGP_KF_ENCRYPT) {
+        secret_only = true;
+    }
     pgp_key_t *key = get_key_prefer_public(primary_key);
     if (!key) {
         return RNP_ERROR_BAD_PARAMETERS;
     }
     pgp_key_t *defkey = find_suitable_key(
-      PGP_OP_UNKNOWN, key, &primary_key->ffi->key_provider, keyflag, no_primary);
+      PGP_OP_UNKNOWN, key, &primary_key->ffi->key_provider, keyflag, no_primary, secret_only);
     if (!defkey) {
         *default_key = NULL;
         return RNP_ERROR_NO_SUITABLE_KEY;
@@ -6213,7 +6217,9 @@ try {
     pgp_key_t *pub = rnp_key_store_search(primary_key->ffi->pubring, &search, NULL);
     // search secring
     pgp_key_t *sec = rnp_key_store_search(primary_key->ffi->secring, &search, NULL);
-
+    if (!sec && secret_only) {
+        return RNP_ERROR_NO_SUITABLE_KEY;
+    }
     if (pub || sec) {
         *default_key = (rnp_key_handle_t) malloc(sizeof(**default_key));
         if (!*default_key) {
